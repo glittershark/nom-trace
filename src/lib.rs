@@ -8,7 +8,9 @@
 //!
 //! ```rust
 //! #[macro_use] extern crate nom;
-//! #[macro_use] extern crate nom-trace;
+//! #[macro_use] extern crate nom_trace;
+//!
+//! use nom::character::complete::digit1;
 //!
 //! pub fn main() {
 //!   named!(parser<Vec<&[u8]>>,
@@ -17,9 +19,9 @@
 //!       tr!(tag!("data: ")),
 //!       tr!(delimited!(
 //!         tag!("("),
-//!         separated_list!(
+//!         separated_list0!(
 //!           tr!(tag!(",")),
-//!           tr!(digit)
+//!           tr!(digit1)
 //!         ),
 //!         tr!(tag!(")"))
 //!       ))
@@ -37,7 +39,7 @@
 //! ```
 //!
 //! You would get the following result
-//! ```
+//! ```notrust
 //! parsed: Ok(("", ["1", "2", "3"]))
 //! preceded        "data: (1,2,3)"
 //!
@@ -136,252 +138,264 @@
 #[macro_use]
 extern crate nom;
 
-use std::fmt::{self,Debug};
-use std::collections::HashMap;
 use nom::IResult;
+use std::collections::HashMap;
+use std::fmt::{self, Debug};
 
 pub struct TraceList {
-  pub traces: HashMap<&'static str, Trace>,
+    pub traces: HashMap<&'static str, Trace>,
 }
 
 impl TraceList {
-  pub fn new() -> Self {
-    let mut traces = HashMap::new();
-    traces.insert("default", Trace::new());
+    pub fn new() -> Self {
+        let mut traces = HashMap::new();
+        traces.insert("default", Trace::new());
 
-    TraceList { traces }
-  }
+        TraceList { traces }
+    }
 
-  pub fn reset(&mut self, tag: &'static str) {
-    let t = self.traces.entry(tag).or_insert(Trace::new());
-    t.reset();
-  }
+    pub fn reset(&mut self, tag: &'static str) {
+        let t = self.traces.entry(tag).or_insert(Trace::new());
+        t.reset();
+    }
 
-  pub fn print(&self, tag: &'static str) {
-    self.traces.get(tag).map(|t| t.print());
-  }
+    pub fn print(&self, tag: &'static str) {
+        self.traces.get(tag).map(|t| t.print());
+    }
 
-  pub fn activate(&mut self, tag: &'static str) {
-    let t = self.traces.entry(tag).or_insert(Trace::new());
-    t.active = true;
-  }
+    pub fn activate(&mut self, tag: &'static str) {
+        let t = self.traces.entry(tag).or_insert(Trace::new());
+        t.active = true;
+    }
 
-  pub fn deactivate(&mut self, tag: &'static str) {
-    let t = self.traces.entry(tag).or_insert(Trace::new());
-    t.active = false;
-  }
+    pub fn deactivate(&mut self, tag: &'static str) {
+        let t = self.traces.entry(tag).or_insert(Trace::new());
+        t.active = false;
+    }
 
-  pub fn open<T>(&mut self, tag: &'static str, input: T, location: &'static str)
-    where Input: From<T> {
-    let t = self.traces.entry(tag).or_insert(Trace::new());
-    t.open(input, location);
-  }
+    pub fn open<T>(&mut self, tag: &'static str, input: T, location: &'static str)
+    where
+        Input: From<T>,
+    {
+        let t = self.traces.entry(tag).or_insert(Trace::new());
+        t.open(input, location);
+    }
 
-  pub fn close<I,O:Debug,E:Debug>(&mut self, tag: &'static str, input: I, location: &'static str, result: &nom::IResult<I,O,E>)
-    where Input: From<I> {
-    let t = self.traces.entry(tag).or_insert(Trace::new());
-    t.close(input, location, result);
-  }
+    pub fn close<I, O: Debug, E: Debug>(
+        &mut self,
+        tag: &'static str,
+        input: I,
+        location: &'static str,
+        result: &nom::IResult<I, O, E>,
+    ) where
+        Input: From<I>,
+    {
+        let t = self.traces.entry(tag).or_insert(Trace::new());
+        t.close(input, location, result);
+    }
 }
 
 /// the main structure hoding trace events. It is stored in a thread level
 /// storage variable
 pub struct Trace {
-  pub events: Vec<TraceEvent>,
-  pub level: usize,
-  pub active: bool,
+    pub events: Vec<TraceEvent>,
+    pub level: usize,
+    pub active: bool,
 }
 
 impl Trace {
-  pub fn new() -> Self {
-    Trace {
-      events: Vec::new(),
-      level: 0,
-      active: true,
+    pub fn new() -> Self {
+        Trace {
+            events: Vec::new(),
+            level: 0,
+            active: true,
+        }
     }
-  }
 
-  pub fn reset(&mut self) {
-    self.events.clear();
-    self.level = 0;
-  }
-
-  pub fn print(&self) {
-    for event in self.events.iter() {
-      event.print();
+    pub fn reset(&mut self) {
+        self.events.clear();
+        self.level = 0;
     }
-  }
 
-  pub fn open<T>(&mut self, input: T, location: &'static str)
-    where Input: From<T> {
-    if self.active {
-      self.events.push(TraceEvent::new(
-        self.level,
-        input,
-        location,
-        TraceEventType::Open,
-      ));
-
-      self.level += 1;
+    pub fn print(&self) {
+        for event in self.events.iter() {
+            event.print();
+        }
     }
-  }
 
-  pub fn close<I,O:Debug,E:Debug>(&mut self, input: I, location: &'static str, result: &nom::IResult<I,O,E>)
-    where Input: From<I> {
-    if self.active {
-      self.level -= 1;
-      let event_type = match result {
-        Ok((_,o)) => TraceEventType::CloseOk(format!("{:?}", o)),
-        Err(nom::Err::Error(e)) => TraceEventType::CloseError(format!("{:?}", e)),
-        Err(nom::Err::Failure(e)) => TraceEventType::CloseFailure(format!("{:?}", e)),
-        Err(nom::Err::Incomplete(i)) => TraceEventType::CloseIncomplete(i.clone()),
-      };
-      self.events.push(TraceEvent::new(
-        self.level,
-        input,
-        location,
-        event_type
-      ));
+    pub fn open<T>(&mut self, input: T, location: &'static str)
+    where
+        Input: From<T>,
+    {
+        if self.active {
+            self.events.push(TraceEvent::new(
+                self.level,
+                input,
+                location,
+                TraceEventType::Open,
+            ));
+
+            self.level += 1;
+        }
     }
-  }
+
+    pub fn close<I, O: Debug, E: Debug>(
+        &mut self,
+        input: I,
+        location: &'static str,
+        result: &nom::IResult<I, O, E>,
+    ) where
+        Input: From<I>,
+    {
+        if self.active {
+            self.level -= 1;
+            let event_type = match result {
+                Ok((_, o)) => TraceEventType::CloseOk(format!("{:?}", o)),
+                Err(nom::Err::Error(e)) => TraceEventType::CloseError(format!("{:?}", e)),
+                Err(nom::Err::Failure(e)) => TraceEventType::CloseFailure(format!("{:?}", e)),
+                Err(nom::Err::Incomplete(i)) => TraceEventType::CloseIncomplete(i.clone()),
+            };
+            self.events
+                .push(TraceEvent::new(self.level, input, location, event_type));
+        }
+    }
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct TraceEvent {
-  pub level: usize,
-  pub input: Input,
-  pub location: &'static str,
-  pub event: TraceEventType,
+    pub level: usize,
+    pub input: Input,
+    pub location: &'static str,
+    pub event: TraceEventType,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub enum TraceEventType {
-  Open,
-  CloseOk(String),
-  CloseError(String),
-  CloseFailure(String),
-  CloseIncomplete(nom::Needed),
+    Open,
+    CloseOk(String),
+    CloseError(String),
+    CloseFailure(String),
+    CloseIncomplete(nom::Needed),
 }
 
 impl TraceEvent {
-  pub fn new<T>(level: usize, input: T, location: &'static str, event: TraceEventType) -> Self
-    where Input: From<T> {
-    TraceEvent {
-      level,
-      input: Input::from(input),
-      location,
-      event,
+    pub fn new<T>(level: usize, input: T, location: &'static str, event: TraceEventType) -> Self
+    where
+        Input: From<T>,
+    {
+        TraceEvent {
+            level,
+            input: Input::from(input),
+            location,
+            event,
+        }
     }
-  }
 
-  pub fn print(&self) {
-    let indent = std::iter::repeat('\t').take(self.level).collect::<String>();
-    match &self.event {
-      TraceEventType::Open => {
-        println!("{}{}\t{:?}\n", indent, self.location, self.input);
-      },
-      TraceEventType::CloseOk(result) => {
-        println!("{}-> Ok({})", indent, result);
-      },
-      TraceEventType::CloseError(e) => {
-        println!("{}-> Error({})", indent, e);
-      },
-      TraceEventType::CloseFailure(e) => {
-        println!("{}-> Failure({})", indent, e);
-      },
-      TraceEventType::CloseIncomplete(i) => {
-        println!("{}-> Incomplete({:?})", indent, i);
-      },
+    pub fn print(&self) {
+        let indent = std::iter::repeat('\t').take(self.level).collect::<String>();
+        match &self.event {
+            TraceEventType::Open => {
+                println!("{}{}\t{:?}\n", indent, self.location, self.input);
+            }
+            TraceEventType::CloseOk(result) => {
+                println!("{}-> Ok({})", indent, result);
+            }
+            TraceEventType::CloseError(e) => {
+                println!("{}-> Error({})", indent, e);
+            }
+            TraceEventType::CloseFailure(e) => {
+                println!("{}-> Failure({})", indent, e);
+            }
+            TraceEventType::CloseIncomplete(i) => {
+                println!("{}-> Incomplete({:?})", indent, i);
+            }
+        }
     }
-  }
 }
 
 #[derive(Clone)]
 pub enum Input {
-  Bytes(*const u8, usize),
-  String(*const u8, usize),
+    Bytes(*const u8, usize),
+    String(*const u8, usize),
 }
 
 impl From<&[u8]> for Input {
-  fn from(input: &[u8]) -> Self {
-    Input::Bytes(input.as_ptr(), input.len())
-  }
+    fn from(input: &[u8]) -> Self {
+        Input::Bytes(input.as_ptr(), input.len())
+    }
 }
 
 impl From<&str> for Input {
-  fn from(input: &str) -> Self {
-    Input::String(input.as_ptr(), input.len())
-  }
+    fn from(input: &str) -> Self {
+        Input::String(input.as_ptr(), input.len())
+    }
 }
 
 impl Debug for Input {
-  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-    match self {
-      Input::String(ptr, len) => {
-        let s = unsafe {
-          std::str::from_utf8_unchecked(std::slice::from_raw_parts(*ptr, *len))
-        };
-        write!(f, "\"{}\"", s)
-      },
-      Input::Bytes(ptr, len) => {
-        let s: &[u8] = unsafe {
-          std::slice::from_raw_parts(*ptr, *len)
-        };
-        write!(f, "{}", to_hex(s, 16))
-      }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Input::String(ptr, len) => {
+                let s = unsafe {
+                    std::str::from_utf8_unchecked(std::slice::from_raw_parts(*ptr, *len))
+                };
+                write!(f, "\"{}\"", s)
+            }
+            Input::Bytes(ptr, len) => {
+                let s: &[u8] = unsafe { std::slice::from_raw_parts(*ptr, *len) };
+                write!(f, "{}", to_hex(s, 16))
+            }
+        }
     }
-  }
 }
 
 fn to_hex(input: &[u8], chunk_size: usize) -> String {
-  let mut v = Vec::with_capacity(input.len() * 3);
-  let mut i = 0;
+    let mut v = Vec::with_capacity(input.len() * 3);
+    let mut i = 0;
 
-  if input.len() <= chunk_size {
-    to_hex_chunk(input, i, input.len(), &mut v);
-  } else {
-    for chunk in input.chunks(chunk_size) {
-      //to_hex_chunk(&input[i..std::cmp::min(i+chunk_size, input.len())],
-      to_hex_chunk(chunk,
-        i, chunk_size, &mut v);
-      i += chunk_size;
-      v.push(b'\n');
+    if input.len() <= chunk_size {
+        to_hex_chunk(input, i, input.len(), &mut v);
+    } else {
+        for chunk in input.chunks(chunk_size) {
+            //to_hex_chunk(&input[i..std::cmp::min(i+chunk_size, input.len())],
+            to_hex_chunk(chunk, i, chunk_size, &mut v);
+            i += chunk_size;
+            v.push(b'\n');
+        }
     }
-  }
 
-  String::from_utf8_lossy(&v[..]).into_owned()
+    String::from_utf8_lossy(&v[..]).into_owned()
 }
 
 static CHARS: &'static [u8] = b"0123456789abcdef";
 
 fn to_hex_chunk(chunk: &[u8], i: usize, chunk_size: usize, v: &mut Vec<u8>) {
-  let s = format!("{:08x}", i);
-  for &ch in s.as_bytes().iter() {
-    v.push(ch);
-  }
-  v.push(b'\t');
-
-  for &byte in chunk {
-    v.push(CHARS[(byte >> 4) as usize]);
-    v.push(CHARS[(byte & 0xf) as usize]);
-    v.push(b' ');
-  }
-  if chunk_size > chunk.len() {
-    for _ in 0..(chunk_size - chunk.len()) {
-      v.push(b' ');
-      v.push(b' ');
-      v.push(b' ');
+    let s = format!("{:08x}", i);
+    for &ch in s.as_bytes().iter() {
+        v.push(ch);
     }
-  }
-  v.push(b'\t');
+    v.push(b'\t');
 
-  for &byte in chunk {
-    if (byte >= 32 && byte <= 126) || byte >= 128 {
-      v.push(byte);
-    } else {
-      v.push(b'.');
+    for &byte in chunk {
+        v.push(CHARS[(byte >> 4) as usize]);
+        v.push(CHARS[(byte & 0xf) as usize]);
+        v.push(b' ');
     }
-  }
+    if chunk_size > chunk.len() {
+        for _ in 0..(chunk_size - chunk.len()) {
+            v.push(b' ');
+            v.push(b' ');
+            v.push(b' ');
+        }
+    }
+    v.push(b'\t');
+
+    for &byte in chunk {
+        if (byte >= 32 && byte <= 126) || byte >= 128 {
+            v.push(byte);
+        } else {
+            v.push(b'.');
+        }
+    }
 }
 
 thread_local! {
@@ -449,27 +463,29 @@ macro_rules! deactivate_trace (
 );
 
 /// function tracer
-pub fn tr<I,O,E,F>(tag: &'static str, name: &'static str, f: F) -> impl Fn(I) -> IResult<I,O,E>
-  where Input: From<I>,
-        F: Fn(I) -> IResult<I,O,E>,
-        I: Clone,
-        O: Debug,
-        E: Debug {
-  move |i: I| {
-    let input1 = i.clone();
-    let input2 = i.clone();
-    NOM_TRACE.with(|trace| {
-      (*trace.borrow_mut()).open(tag, input1, name);
-    });
+pub fn tr<I, O, E, F>(tag: &'static str, name: &'static str, f: F) -> impl Fn(I) -> IResult<I, O, E>
+where
+    Input: From<I>,
+    F: Fn(I) -> IResult<I, O, E>,
+    I: Clone,
+    O: Debug,
+    E: Debug,
+{
+    move |i: I| {
+        let input1 = i.clone();
+        let input2 = i.clone();
+        NOM_TRACE.with(|trace| {
+            (*trace.borrow_mut()).open(tag, input1, name);
+        });
 
-    let res = f(i);
+        let res = f(i);
 
-    NOM_TRACE.with(|trace| {
-      (*trace.borrow_mut()).close(tag, input2, name, &res);
-    });
+        NOM_TRACE.with(|trace| {
+            (*trace.borrow_mut()).close(tag, input2, name, &res);
+        });
 
-    res
-  }
+        res
+    }
 }
 
 /// wrap a nom parser or combinator with this macro to add a trace point
@@ -556,57 +572,52 @@ macro_rules! tr (
   );
 );
 
-
 #[cfg(test)]
 mod tests {
-  use super::*;
-  use nom::character::complete::digit1 as digit;
+    use super::*;
+    use nom::character::complete::digit1 as digit;
 
-  #[test]
-  pub fn trace_bytes_parser() {
-    named!(parser<Vec<&[u8]>>,
-      tr!(preceded!(
-        tr!(tag!("data: ")),
-        tr!(delimited!(
-          tag!("("),
-          separated_list!(
-            tr!(tag!(",")),
-            tr!(digit)
-          ),
-          tr!(tag!(")"))
-        ))
-      ))
-    );
+    #[test]
+    pub fn trace_bytes_parser() {
+        named!(
+            parser<Vec<&[u8]>>,
+            tr!(preceded!(
+                tr!(tag!("data: ")),
+                tr!(delimited!(
+                    tag!("("),
+                    separated_list0!(tr!(tag!(",")), tr!(digit)),
+                    tr!(tag!(")"))
+                ))
+            ))
+        );
 
-    println!("parsed: {:?}", parser(&b"data: (1,2,3)"[..]));
+        println!("parsed: {:?}", parser(&b"data: (1,2,3)"[..]));
 
-    print_trace!();
-    reset_trace!();
-    panic!();
-  }
+        print_trace!();
+        reset_trace!();
+    }
 
-  #[test]
-  pub fn trace_str_parser() {
-    named!(parser<&str, Vec<&str>>,
-      tr!(ROOT, preceded!(
-        tr!(tag!("data: ")),
-        tr!(PARENS, delimited!(
-          tag!("("),
-          separated_list!(
-            tr!(tag!(",")),
-            tr!(digit)
-          ),
-          tr!(tag!(")"))
-        ))
-      ))
-    );
+    #[test]
+    pub fn trace_str_parser() {
+        named!(parser<&str, Vec<&str>>,
+          tr!(ROOT, preceded!(
+            tr!(tag!("data: ")),
+            tr!(PARENS, delimited!(
+              tag!("("),
+              separated_list0!(
+                tr!(tag!(",")),
+                tr!(digit)
+              ),
+              tr!(tag!(")"))
+            ))
+          ))
+        );
 
-    deactivate_trace!();
-    activate_trace!();
-    println!("parsed: {:?}", parser("data: (1,2,3)"));
+        deactivate_trace!();
+        activate_trace!();
+        println!("parsed: {:?}", parser("data: (1,2,3)"));
 
-    print_trace!();
-    reset_trace!();
-    panic!();
-  }
+        print_trace!();
+        reset_trace!();
+    }
 }
